@@ -18,6 +18,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import gradio as gr
 import pandas as pd
@@ -29,6 +30,8 @@ import requests
 API_URL = "https://data.moa.gov.tw/Service/OpenData/TransService.aspx?UnitId=QcbUEzN6E6DL"
 # 上次成功下載的資料，API 連不上時使用；存在程式檔旁邊，不受終端機所在資料夾影響
 CACHE_FILE = Path(__file__).with_name("dogs_cache.csv")
+# 雲端伺服器使用世界標準時間（UTC），一律換成台灣時間，日期與顯示的時間才正確
+TAIWAN = ZoneInfo("Asia/Taipei")
 
 # 體型適配：住宅型態與活動時間各分 1～3 級
 HOME_LEVEL = {"套房": 1, "公寓大樓": 2, "有院子的住家": 3}
@@ -72,13 +75,13 @@ def load_data():
         raw = pd.DataFrame(records)
         raw.to_csv(CACHE_FILE, index=False, encoding="utf-8-sig")   # 成功就更新快取
         print(f"下載完成，共 {len(raw)} 筆", flush=True)
-        return raw, f"農業部動物認領養開放資料（{datetime.now():%Y/%m/%d %H:%M} 下載）"
+        return raw, f"農業部動物認領養開放資料（{datetime.now(TAIWAN):%Y/%m/%d %H:%M} 下載）"
     except (requests.RequestException, ValueError, TimeoutError) as error:
         print("API 下載失敗：", error, flush=True)
         if not CACHE_FILE.exists():
             raise RuntimeError("無法連線開放資料，也沒有快取資料，請確認網路後重新執行。")
         raw = pd.read_csv(CACHE_FILE, dtype=str, encoding="utf-8-sig")
-        updated = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
+        updated = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime, TAIWAN)
         print(f"改用快取資料，共 {len(raw)} 筆", flush=True)
         return raw, f"⚠️ 無法連線開放資料，改用快取資料（{updated:%Y/%m/%d %H:%M} 更新）"
 
@@ -87,7 +90,7 @@ def load_data():
 # Part 3. 整理資料：只留待認養的狗，算出縣市與等待天數
 # ============================================================
 def clean_data(raw, today=None):
-    today = pd.Timestamp(today or datetime.now().date())
+    today = pd.Timestamp(today or datetime.now(TAIWAN).date())
     df = raw.copy()
 
     # 只留「狗」，且狀態為開放認養、今天在開放認養期間內的動物。
