@@ -13,6 +13,9 @@
 """
 
 import html
+import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -46,23 +49,37 @@ SEX_MAP = {"M": "公", "F": "母", "N": "未知"}
 # ============================================================
 # Part 2. 取得資料：呼叫 API，失敗時改讀快取
 # ============================================================
+def download_records(max_seconds=60):
+    """下載 API 資料；超過 max_seconds 秒還沒下載完就放棄（避免連線很慢時一直卡住）。"""
+    start = time.time()
+    chunks = []
+    with requests.get(API_URL, timeout=(10, 30), stream=True) as response:
+        response.raise_for_status()                 # HTTP 錯誤碼（404、500…）會丟出例外
+        for chunk in response.iter_content(chunk_size=65536):
+            chunks.append(chunk)
+            if time.time() - start > max_seconds:
+                raise TimeoutError(f"超過 {max_seconds} 秒仍未下載完成")
+    return json.loads(b"".join(chunks))             # 內容不是 JSON 會丟出 ValueError
+
+
 def load_data():
     """回傳 (原始資料表, 資料來源說明)。"""
+    print("下載開放資料中…", flush=True)            # flush=True：雲端平台的紀錄才會立刻顯示
     try:
-        response = requests.get(API_URL, timeout=30)
-        response.raise_for_status()                 # HTTP 錯誤碼（404、500…）會丟出例外
-        records = response.json()                   # 內容不是 JSON 會丟出 ValueError
+        records = download_records()
         if not records:
             raise ValueError("API 回傳空資料")
         raw = pd.DataFrame(records)
         raw.to_csv(CACHE_FILE, index=False, encoding="utf-8-sig")   # 成功就更新快取
+        print(f"下載完成，共 {len(raw)} 筆", flush=True)
         return raw, f"農業部動物認領養開放資料（{datetime.now():%Y/%m/%d %H:%M} 下載）"
-    except (requests.RequestException, ValueError) as error:
-        print("API 下載失敗：", error)
+    except (requests.RequestException, ValueError, TimeoutError) as error:
+        print("API 下載失敗：", error, flush=True)
         if not CACHE_FILE.exists():
             raise RuntimeError("無法連線開放資料，也沒有快取資料，請確認網路後重新執行。")
         raw = pd.read_csv(CACHE_FILE, dtype=str, encoding="utf-8-sig")
         updated = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
+        print(f"改用快取資料，共 {len(raw)} 筆", flush=True)
         return raw, f"⚠️ 無法連線開放資料，改用快取資料（{updated:%Y/%m/%d %H:%M} 更新）"
 
 
@@ -261,4 +278,10 @@ with gr.Blocks(title="收容犬認養媒合推薦", **({} if GRADIO_6 else {"js"
     button.click(recommend, [county_in, home_in, activity_in, adult_in], [summary_out, cards_out])
 
 if __name__ == "__main__":
-    demo.launch(**({"js": FORCE_LIGHT} if GRADIO_6 else {}))
+    launch_options = {"js": FORCE_LIGHT} if GRADIO_6 else {}
+    # 部署到 Render 等雲端平台時，平台會用環境變數 PORT 指定連接埠，
+    # 並需要開放外部連線（0.0.0.0）；在自己電腦執行時沒有 PORT，維持預設
+    if "PORT" in os.environ:
+        launch_options.update(server_name="0.0.0.0", server_port=int(os.environ["PORT"]))
+    print("啟動網頁…", flush=True)
+    demo.launch(**launch_options)
